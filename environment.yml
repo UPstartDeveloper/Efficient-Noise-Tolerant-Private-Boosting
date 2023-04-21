@@ -1,5 +1,6 @@
 name: '559'
 channels:
+  - conda-forge
   - defaults
 dependencies:
   - appnope=0.1.2=py310hecd8cb5_1001
@@ -10,13 +11,14 @@ dependencies:
   - brotli=1.0.9=hca72f7f_7
   - brotli-bin=1.0.9=hca72f7f_7
   - bzip2=1.0.8=h1de35cc_0
-  - ca-certificates=2023.01.10=hecd8cb5_0
+  - ca-certificates=2022.12.7=h033912b_0
   - cairo=1.16.0=h3ce6f7e_3
-  - certifi=2022.12.7=py310hecd8cb5_0
+  - certifi=2022.12.7=pyhd8ed1ab_0
   - comm=0.1.2=py310hecd8cb5_0
   - cycler=0.11.0=pyhd3eb1b0_0
   - debugpy=1.5.1=py310he9d5cce_0
   - decorator=5.1.1=pyhd3eb1b0_0
+  - diffprivlib=0.6.2=pyhd8ed1ab_0
   - entrypoints=0.4=py310hecd8cb5_0
   - executing=0.8.3=pyhd3eb1b0_0
   - expat=2.4.9=he9d5cce_0
@@ -87,7 +89,9 @@ dependencies:
   - ncurses=6.4=hcec6c5f_0
   - nest-asyncio=1.5.6=py310hecd8cb5_0
   - numexpr=2.8.4=py310h9638375_0
-  - openssl=1.1.1t=hca72f7f_0
+  - numpy=1.23.5=py310h9638375_0
+  - numpy-base=1.23.5=py310ha98c3c9_0
+  - openssl=1.1.1t=hfd90126_0
   - packaging=22.0=py310hecd8cb5_0
   - pandas=1.5.2=py310h3ea8b11_0
   - pango=1.50.7=h80fe9ab_0
@@ -195,7 +199,6 @@ dependencies:
     - networkx==2.8.8
     - notebook==6.5.2
     - notebook-shim==0.2.2
-    - numpy==1.23.5
     - oauthlib==3.2.2
     - opencv-python==4.6.0.66
     - opt-einsum==3.3.0
