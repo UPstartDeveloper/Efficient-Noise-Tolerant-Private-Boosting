@@ -56,10 +56,12 @@ class DPAdaBoostClassifier(ensemble.AdaBoostClassifier, DiffprivlibMixin):
         self.delta = delta
 
         # B: configure more params of the boosting algorithm
-        self.T = n_estimators = (1024 * math.log10(1 / self.k)) / (self.tau ** 2)
+        self.T = n_estimators = int(math.ceil(1024 * math.log10(1 / self.k)) / (self.tau ** 2))
 
-        super().__init__(estimator=estimator, n_estimators=n_estimators,
-                         algorithm='LB-NxM', random_state=random_state,
+        print(f"T: {self.T}")
+
+        super().__init__(estimator, n_estimators=n_estimators,
+                         algorithm='SAMME', random_state=random_state,
                          *args, **unused_args)
         
         # C: add DP-specific fields
@@ -79,7 +81,7 @@ class DPAdaBoostClassifier(ensemble.AdaBoostClassifier, DiffprivlibMixin):
             )
         )
 
-    def _boost_lb_nxm(self, iboost, X, y, sample_weight, random_state):
+    def _boost_discrete(self, iboost, X, y, sample_weight, random_state):
         """Implement a single boost using the 'Lazy-Bregman Next Measure (LB-NxM)' algorithm."""
         estimator = self._make_estimator(random_state=random_state)
 
@@ -121,17 +123,24 @@ class DPAdaBoostClassifier(ensemble.AdaBoostClassifier, DiffprivlibMixin):
         proba = y_predict_proba  # alias for readability
         np.clip(proba, np.finfo(proba.dtype).eps, None, out=proba)
 
-        # Boost weight using multi-class AdaBoost SAMME.R alg
-        estimator_weight = (
-            -1.0
-            * self.learning_rate
-            * ((n_classes - 1.0) / n_classes)
-            * xlogy(y_coding, y_predict_proba).sum(axis=1)
+        # # Boost weight using multi-class AdaBoost SAMME.R alg
+        # estimator_weight = (
+        #     -1.0
+        #     * self.learning_rate
+        #     * ((n_classes - 1.0) / n_classes)
+        #     * xlogy(y_coding, y_predict_proba).sum(axis=1)
+        # )
+
+        # Boost weight using multi-class AdaBoost SAMME alg
+        estimator_weight = self.learning_rate * (
+            np.log((1.0 - estimator_error) / estimator_error) + np.log(n_classes - 1.0)
         )
+
+        print(f'weight shape: {estimator_weight.shape}')
 
         # Only boost the weights if it will fit again
         if not iboost == self.n_estimators - 1:
-            loss = 1 - 0.5 * (np.linalg.norm(y - y_predict_proba, 1))
+            loss = 1 - 0.5 * (np.linalg.norm(y - y_predict, 1))
             # ✅ Debug[Zain]: double check this against what's in the paper 
             sample_weight *= np.exp(-1 * self.learning_rate * np.sum(loss))
             sample_weight_all_prod = np.prod(sample_weight)
@@ -149,15 +158,17 @@ class DPAdaBoostClassifier(ensemble.AdaBoostClassifier, DiffprivlibMixin):
         Parent class implementation: https://github.com/scikit-learn/scikit-learn/blob/364c77e047ca08a95862becf40a04fe9d4cd2c98/sklearn/ensemble/_weight_boosting.py#L529
         """
         if self.algorithm == "SAMME.R":
+            self.k = self.alpha / 4  # this comes from the last line of "Algorithm 5" in the paper
+            sample_weight = np.repeat(self.k, X.shape[0])
             return self._boost_real(iboost, X, y, sample_weight, random_state)
 
         elif self.algorithm == "SAMME":
             return self._boost_discrete(iboost, X, y, sample_weight, random_state)
         
-        else:  # elif self.algorithm == "LB-NxM":
-            self.k = self.alpha / 4  # this comes from the last line of "Algorithm 5" in the paper
-            sample_weight = np.repeat(self.k, X.shape[0])
-            return self._boost_lb_nxm(self, iboost, X, y, sample_weight, random_state)
+        # else:  # elif self.algorithm == "LB-NxM":
+        #     self.k = self.alpha / 4  # this comes from the last line of "Algorithm 5" in the paper
+        #     sample_weight = np.repeat(self.k, X.shape[0])
+        #     return self._boost_lb_nxm(iboost, X, y, sample_weight, random_state)
     
     def fit(self, X, y, sample_weight=None):
         '''Just like the regular, but tracks the privacy budget.'''
