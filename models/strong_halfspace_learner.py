@@ -1,9 +1,11 @@
 import warnings
 
 import numpy as np
+from scipy.special import xlogy
 from sklearn import ensemble
-from sklearn.base import is_regressor
-from sklearn.utils.validation import _check_sample_weight
+# from sklearn.base import is_regressor
+# from sklearn.utils import check_random_state
+# from sklearn.utils.validation import _check_sample_weight
 
 # from diffprivlib.accountant import BudgetAccountant
 # from diffprivlib.mechanisms import Gaussian
@@ -39,120 +41,97 @@ class DPAdaBoostClassifier(ensemble.AdaBoostClassifier):
     #     "learning_rate", "algorithm",
     #     "random_state")
 
-    def __init__(self, estimator, n_estimators=50,
-                 algorithm='SAMME.R', random_state=None,
+    def __init__(self, estimator,
+                 tau,  # e.g., the difference between the cov of the classes
+                 k,  # e.g., I guess this'd be the avg of the cov of the classes
+                 random_state=None,
                  alpha=.95, beta=0.05, epsilon=0.1, delta=0.01,
-                 tau=..., k=...,
                  *args, **unused_args):
         
-        super().__init__(estimator=estimator, n_estimators=n_estimators,
-                         algorithm=algorithm, random_state=random_state, *args)
-        
-        desired_final_accuracy = alpha
-        probability_of_learning_failure = beta
-        desired_final_privacy = epsilon
-        desired_final_privacy_approx = delta
-        density_of_lazybregboost = k
-        margin_of_halfspace = tau
-
-        # self.accountant = BudgetAccountant.load_default(accountant)
+        # A: for docs purposes - these are what all the vars mean
+        desired_final_accuracy = self.alpha = alpha
+        probability_of_learning_failure = self.beta = beta
+        desired_final_privacy = self.epsilon = epsilon
+        desired_final_privacy_approx = self.delta = delta
+        density_of_lazybregboost = self.k = k
+        margin_of_halfspace = self.tau = tau
         # parameters for the mechanism - will be set to Gaussian as default for now
         self.epsilon = epsilon
         self.delta = delta
-        # self.data_norm = data_norm  # TODO[Zain]: delete?
-        # self.classes_ = None
 
-        # warn_unused_args(unused_args)
+        # B: configure more params of the boosting algorithm
+        self.sigma = ... # TODO[Zain]
+        self.T = n_estimators = ...  # TODO[Zain]
 
-    # noinspection PyAttributeOutsideInit
-    def fit(self, X, y, sample_weight=None):
-        """Fit the model according to the given training data.
+        super().__init__(estimator=estimator, n_estimators=n_estimators,
+                         algorithm='SAMME.R', random_state=random_state,
+                         *args, **unused_args)
 
-        Parameters
-        ----------
-        X : {array-like, sparse matrix}, shape (n_samples, n_features)
-            Training vector, where n_samples is the number of samples and n_features is the number of features.
 
-        y : array-like, shape (n_samples,)
-            Target vector relative to X.
+    def _boost_real(self, iboost, X, y, sample_weight, random_state):
+        """Implement a single boost using a DP version of the SAMME.R real algorithm."""
+        estimator = self._make_estimator(random_state=random_state)
 
-        sample_weight : ignored
-            Ignored by diffprivlib.  Present for consistency with sklearn API.
+        estimator.fit(X, y, sample_weight=sample_weight)
 
-        Returns
-        -------
-        self : class
+        y_predict_proba = estimator.predict_proba(X)
 
-        """
-        self._validate_params()
+        if iboost == 0:
+            self.classes_ = getattr(estimator, "classes_", None)
+            self.n_classes_ = len(self.classes_)
 
-        X, y = self._validate_data(
-            X,
-            y,
-            accept_sparse=["csr", "csc"],
-            ensure_2d=True,
-            allow_nd=True,
-            dtype=None,
-            y_numeric=is_regressor(self),
+        y_predict = self.classes_.take(np.argmax(y_predict_proba, axis=1), axis=0)
+
+        # Instances incorrectly classified
+        incorrect = y_predict != y
+
+        # Error fraction
+        estimator_error = np.mean(np.average(incorrect, weights=sample_weight, axis=0))
+
+        # Stop if classification is perfect
+        if estimator_error <= 0:
+            return sample_weight, 1.0, 0.0
+
+        # Construct y coding as described in Zhu et al [2]:
+        #
+        #    y_k = 1 if c == k else -1 / (K - 1)
+        #
+        # where K == n_classes_ and c, k in [0, K) are indices along the second
+        # axis of the y coding with c being the index corresponding to the true
+        # class label.
+        n_classes = self.n_classes_
+        classes = self.classes_
+        y_codes = np.array([-1.0 / (n_classes - 1), 1.0])
+        y_coding = y_codes.take(classes == y[:, np.newaxis])
+
+        # Displace zero probabilities so the log is defined.
+        # Also fix negative elements which may occur with
+        # negative sample weights.
+        proba = y_predict_proba  # alias for readability
+        np.clip(proba, np.finfo(proba.dtype).eps, None, out=proba)
+
+        # Boost weight using multi-class AdaBoost SAMME.R alg
+        estimator_weight = (
+            -1.0
+            * self.learning_rate
+            * ((n_classes - 1.0) / n_classes)
+            * xlogy(y_coding, y_predict_proba).sum(axis=1)
         )
 
-        sample_weight = _check_sample_weight(
-            sample_weight, X, np.float64, copy=True, only_non_negative=True
-        )
-        sample_weight /= sample_weight.sum()
+        # Only boost the weights if it will fit again
+        if not iboost == self.n_estimators - 1:
+            loss = 1 - 0.5 * (np.linalg.norm(y - y_predict_proba, 1))
+            # ✅ Debug[Zain]: double check this against what's in the paper 
+            sample_weight *= np.exp(-1 * self.learning_rate * np.sum(loss))
+            sample_weight_all_prod = np.prod(sample_weight)
+            sample_weight = np.repeat(sample_weight_all_prod, X.shape[0])
 
-        # Check parameters
-        self._validate_estimator()
-
-        # Clear any previous fit results
-        self.estimators_ = []
-        self.estimator_weights_ = np.zeros(self.n_estimators, dtype=np.float64)
-        self.estimator_errors_ = np.ones(self.n_estimators, dtype=np.float64)
-
-        # Initialization of the random number instance that will be used to
-        # generate a seed at each iteration
-        random_state = check_random_state(self.random_state)
-        epsilon = np.finfo(sample_weight.dtype).eps
-
-        zero_weight_mask = sample_weight == 0.0
-        for iboost in range(self.n_estimators):
-            # avoid extremely small sample weight, for details see issue #20320
-            sample_weight = np.clip(sample_weight, a_min=epsilon, a_max=None)
-            # do not clip sample weights that were exactly zero originally
-            sample_weight[zero_weight_mask] = 0.0
-
-            # Boosting step
-            sample_weight, estimator_weight, estimator_error = self._boost(
-                iboost, X, y, sample_weight, random_state
-            )
-
-            # Early termination
-            if sample_weight is None:
-                break
-            self.estimator_weights_[iboost] = estimator_weight
-            self.estimator_errors_[iboost] = estimator_error
-
-            # Stop if error is zero
-            if estimator_error == 0:
-                break
-
-            sample_weight_sum = np.sum(sample_weight)
-
-            if not np.isfinite(sample_weight_sum):
-                warnings.warn(
-                    "Sample weights have reached infinite values,"
-                    f" at iteration {iboost}, causing overflow. "
-                    "Iterations stopped. Try lowering the learning rate.",
-                    stacklevel=2,
-                )
-                break
-
-            # Stop if the sum of sample weights has become non-positive
-            if sample_weight_sum <= 0:
-                break
-
-            if iboost < self.n_estimators - 1:
-                # Normalize
-                sample_weight /= sample_weight_sum
-
-        return self
+        # Change[Zain] - go from returning 1, to the actual weight
+        # return sample_weight, 1.0, estimator_error
+        return sample_weight, estimator_weight, estimator_error
+    
+    def fit(self, X, y):
+        # as per the paper, we initialize the sample_weights to uniform vector
+        # (whereas the default would be to use all 1's)
+        sample_weight = np.repeat(self.k, X.shape[0])
+        return super().fit(X, y, sample_weight)
