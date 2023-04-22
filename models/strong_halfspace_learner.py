@@ -1,4 +1,4 @@
-import warnings
+# import warnings
 
 import numpy as np
 from scipy.special import xlogy
@@ -34,13 +34,6 @@ class DPAdaBoostClassifier(ensemble.AdaBoostClassifier):
     ----------
     .. [TODO]
     """
-
-    # _parameter_constraints = DiffprivlibMixin._copy_parameter_constraints(
-    #     ensemble.AdaBoostClassifier,
-    #     "estimator", "n_estimators",
-    #     "learning_rate", "algorithm",
-    #     "random_state")
-
     def __init__(self, estimator,
                  tau,  # e.g., the difference between the cov of the classes
                  k,  # e.g., I guess this'd be the avg of the cov of the classes
@@ -64,12 +57,11 @@ class DPAdaBoostClassifier(ensemble.AdaBoostClassifier):
         self.T = n_estimators = ...  # TODO[Zain]
 
         super().__init__(estimator=estimator, n_estimators=n_estimators,
-                         algorithm='SAMME.R', random_state=random_state,
+                         algorithm='LB-NxM', random_state=random_state,
                          *args, **unused_args)
 
-
-    def _boost_real(self, iboost, X, y, sample_weight, random_state):
-        """Implement a single boost using a DP version of the SAMME.R real algorithm."""
+    def _boost_lb_nxm(self, iboost, X, y, sample_weight, random_state):
+        """Implement a single boost using the 'Lazy-Bregman Next Measure (LB-NxM)' algorithm."""
         estimator = self._make_estimator(random_state=random_state)
 
         estimator.fit(X, y, sample_weight=sample_weight)
@@ -130,8 +122,19 @@ class DPAdaBoostClassifier(ensemble.AdaBoostClassifier):
         # return sample_weight, 1.0, estimator_error
         return sample_weight, estimator_weight, estimator_error
     
-    def fit(self, X, y):
-        # as per the paper, we initialize the sample_weights to uniform vector
-        # (whereas the default would be to use all 1's)
-        sample_weight = np.repeat(self.k, X.shape[0])
-        return super().fit(X, y, sample_weight)
+    def _boost(self, iboost, X, y, sample_weight, random_state):
+        """
+        Behaves actually as in the parent class, except we are 
+        always going to execute the 'LB-NxM' algorithm.
+
+        Parent class implementation: https://github.com/scikit-learn/scikit-learn/blob/364c77e047ca08a95862becf40a04fe9d4cd2c98/sklearn/ensemble/_weight_boosting.py#L529
+        """
+        if self.algorithm == "SAMME.R":
+            return self._boost_real(iboost, X, y, sample_weight, random_state)
+
+        elif self.algorithm == "SAMME":
+            return self._boost_discrete(iboost, X, y, sample_weight, random_state)
+        
+        else:  # elif self.algorithm == "LB-NxM":
+            sample_weight = np.repeat(self.k, X.shape[0])
+            return self._boost_lb_nxm(self, iboost, X, y, sample_weight, random_state)
