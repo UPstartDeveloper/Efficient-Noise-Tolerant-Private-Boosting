@@ -1,3 +1,4 @@
+import math
 # import warnings
 
 import numpy as np
@@ -7,13 +8,13 @@ from sklearn import ensemble
 # from sklearn.utils import check_random_state
 # from sklearn.utils.validation import _check_sample_weight
 
-# from diffprivlib.accountant import BudgetAccountant
+from diffprivlib.accountant import BudgetAccountant
 # from diffprivlib.mechanisms import Gaussian
 # from diffprivlib.utils import PrivacyLeakWarning, warn_unused_args, check_random_state
-# from diffprivlib.validation import DiffprivlibMixin
+from diffprivlib.validation import DiffprivlibMixin
 
 
-class DPAdaBoostClassifier(ensemble.AdaBoostClassifier):
+class DPAdaBoostClassifier(ensemble.AdaBoostClassifier, DiffprivlibMixin):
     r"""The 'Strong Halfspace Learner' (aka HS-StL) classifier by Bun et. al (2020).
 
     TODO
@@ -34,11 +35,13 @@ class DPAdaBoostClassifier(ensemble.AdaBoostClassifier):
     ----------
     .. [TODO]
     """
+
     def __init__(self, estimator,
                  tau,  # e.g., the difference between the cov of the classes
                  k,  # e.g., I guess this'd be the avg of the cov of the classes
                  random_state=None,
                  alpha=.95, beta=0.05, epsilon=0.1, delta=0.01,
+                 accountant=None,
                  *args, **unused_args):
         
         # A: for docs purposes - these are what all the vars mean
@@ -53,12 +56,28 @@ class DPAdaBoostClassifier(ensemble.AdaBoostClassifier):
         self.delta = delta
 
         # B: configure more params of the boosting algorithm
-        self.sigma = ... # TODO[Zain]
-        self.T = n_estimators = ...  # TODO[Zain]
+        self.T = n_estimators = (1024 * math.log10(1 / self.k)) / (self.tau ** 2)
 
         super().__init__(estimator=estimator, n_estimators=n_estimators,
                          algorithm='LB-NxM', random_state=random_state,
                          *args, **unused_args)
+        
+        # C: add DP-specific fields
+        self.accountant = BudgetAccountant.load_default(accountant)
+        REDUNDANCY_SCALE_FACTOR = self.c = 1e-10  # [Zain] from Theorem 27 in the paper,
+                                                  # "c" is a constant that is utilized
+                                                  # to characterize the likelihood our 
+                                                  # weak learner is able to meet a "threshold" 
+                                                  # advantage lower-bound
+                                                  # TBH - I have no idea what value should be used here,
+                                                  # but from 1st-principles it probably makes sense to 
+                                                  # set it to something really small!
+        # TODO[Zain]: refactor magic numbers
+        self.sigma = (
+            (self.tau / (8 * self.c)) * math.sqrt(
+                math.log10((3072 * math.log10(1 / self.k)) / (self.beta * (self.tau ** 2)))
+            )
+        )
 
     def _boost_lb_nxm(self, iboost, X, y, sample_weight, random_state):
         """Implement a single boost using the 'Lazy-Bregman Next Measure (LB-NxM)' algorithm."""
@@ -138,3 +157,10 @@ class DPAdaBoostClassifier(ensemble.AdaBoostClassifier):
         else:  # elif self.algorithm == "LB-NxM":
             sample_weight = np.repeat(self.k, X.shape[0])
             return self._boost_lb_nxm(self, iboost, X, y, sample_weight, random_state)
+    
+    def fit(self, X, y, sample_weight=None):
+        '''Just like the regular, but tracks the privacy budget.'''
+        self.accountant.check(self.epsilon, 0)
+        fitted_self = super().fit(X, y, sample_weight=sample_weight)
+        self.accountant.spend(self.epsilon, 0)
+        return fitted_self
