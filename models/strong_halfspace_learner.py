@@ -163,6 +163,8 @@ class DPAdaBoostClassifier(ensemble.AdaBoostClassifier, DiffprivlibMixin):
             return self._boost_real(iboost, X, y, sample_weight, random_state)
 
         elif self.algorithm == "SAMME":
+            self.k = self.alpha / 4  # this comes from the last line of "Algorithm 5" in the paper
+            sample_weight = np.repeat(self.k, X.shape[0])
             return self._boost_discrete(iboost, X, y, sample_weight, random_state)
         
         # else:  # elif self.algorithm == "LB-NxM":
